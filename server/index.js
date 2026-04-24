@@ -15,9 +15,15 @@ const app  = express();
 const PORT = process.env.PORT || 3001;
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
+const allowedOrigins = (process.env.CLIENT_ORIGIN || 'http://localhost:5173')
+  .split(',').map((o) => o.trim());
+
 app.use(cors({
-  origin: process.env.CLIENT_ORIGIN || 'http://localhost:5173',
-  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  origin: (origin, cb) => {
+    if (!origin || allowedOrigins.includes(origin)) return cb(null, true);
+    cb(new Error(`CORS: origin ${origin} not allowed`));
+  },
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
 app.use(express.json());

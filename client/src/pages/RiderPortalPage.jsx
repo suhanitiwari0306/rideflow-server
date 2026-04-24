@@ -239,7 +239,7 @@ const RiderPortalPage = ({ theme, onThemeToggle }) => {
                 </div>
               ) : (
                 <>
-                  <div className="form-group" style={{ position: 'relative' }}>
+                  <div className="form-group" style={{ position: 'relative', zIndex: 10 }}>
                     <span className="field-label">Pickup location</span>
                     <input
                       value={pickup}
@@ -267,7 +267,7 @@ const RiderPortalPage = ({ theme, onThemeToggle }) => {
                       </div>
                     )}
                   </div>
-                  <div className="form-group" style={{ position: 'relative' }}>
+                  <div className="form-group" style={{ position: 'relative', zIndex: 10 }}>
                     <span className="field-label">Dropoff location</span>
                     <input
                       value={dropoff}
@@ -354,7 +354,14 @@ const RiderPortalPage = ({ theme, onThemeToggle }) => {
               <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', margin: 0 }}>
                 Ask about things to do, restaurants, or attractions at your destination.
               </p>
-              <strata-chat workspace="mis372t" />
+              <div className="strata-chat-widget">
+                <iframe
+                  src="https://strata.fyi/embed?workspace=mis372t"
+                  loading="lazy"
+                  allow="clipboard-write"
+                  style={{ width: '100%', height: '420px', border: 'none', borderRadius: '8px' }}
+                />
+              </div>
             </div>
           </div>
         </div>

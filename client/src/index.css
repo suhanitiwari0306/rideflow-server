@@ -3243,7 +3243,7 @@ tbody tr:nth-child(even):hover { background: var(--bg-card-hover); }
   background: var(--bg-card);
   border: 1px solid var(--border-bright);
   border-radius: var(--radius-sm);
-  z-index: 100;
+  z-index: 1100;
   max-height: 200px;
   overflow-y: auto;
   box-shadow: 0 8px 24px rgba(0,0,0,0.4);
