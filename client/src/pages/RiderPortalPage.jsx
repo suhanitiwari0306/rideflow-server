@@ -169,14 +169,19 @@ const RiderPortalPage = ({ theme, onThemeToggle }) => {
     getRoute(pickupCoords, dropoffCoords).then(setRouteInfo);
   }, [pickupCoords, dropoffCoords]);
 
-  const handleGetSuggestions = () => {
-    if (!dropoff.trim()) return;
+  const handleGetSuggestions = async () => {
+    const dest = dropoff.trim();
+    if (!dest) return;
     setAiSuggestions('');
     setAiLoading(true);
-    aiApi.getDestinationSuggestions(dropoff)
-      .then((res) => setAiSuggestions(res.data.suggestions || ''))
-      .catch(() => setAiSuggestions(''))
-      .finally(() => setAiLoading(false));
+    try {
+      const res = await aiApi.getDestinationSuggestions(dest);
+      setAiSuggestions(res.data?.suggestions || '');
+    } catch {
+      setAiSuggestions('');
+    } finally {
+      setAiLoading(false);
+    }
   };
 
   const handleBookRide = async () => {
