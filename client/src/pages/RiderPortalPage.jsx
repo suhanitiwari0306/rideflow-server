@@ -6,14 +6,19 @@ import { ridesApi, paymentsApi, aiApi } from '../services/api';
 const RideMap = lazy(() => import('../components/RideMap'));
 
 const searchAddresses = async (query) => {
-  if (!query || query.length < 4) return [];
-  const params = new URLSearchParams({ format: 'json', q: query, limit: '5', addressdetails: '1', countrycodes: 'us' });
+  if (!query || query.length < 3) return [];
+  const params = new URLSearchParams({ q: query, limit: '5', lang: 'en', lat: '30.2672', lon: '-97.7431' });
   try {
-    const res = await fetch(`https://nominatim.openstreetmap.org/search?${params}`, {
-      headers: { 'Accept-Language': 'en', 'User-Agent': 'RideFlow-App' },
-    });
+    const res = await fetch(`https://photon.komoot.io/api/?${params}`);
     const data = await res.json();
-    return data.map((d) => ({ label: d.display_name, lat: parseFloat(d.lat), lon: parseFloat(d.lon) }));
+    return (data.features || []).map((f) => {
+      const p = f.properties;
+      const parts = [
+        p.housenumber && p.street ? `${p.housenumber} ${p.street}` : (p.name || p.street),
+        p.city, p.state, p.postcode, p.country,
+      ].filter(Boolean);
+      return { label: parts.join(', '), lat: f.geometry.coordinates[1], lon: f.geometry.coordinates[0] };
+    });
   } catch { return []; }
 };
 
@@ -164,15 +169,15 @@ const RiderPortalPage = ({ theme, onThemeToggle }) => {
     getRoute(pickupCoords, dropoffCoords).then(setRouteInfo);
   }, [pickupCoords, dropoffCoords]);
 
-  /* AI destination suggestions — fires when dropoff resolves to coords */
-  useEffect(() => {
-    if (!dropoff.trim() || !dropoffCoords) { setAiSuggestions(''); return; }
+  const handleGetSuggestions = () => {
+    if (!dropoff.trim()) return;
+    setAiSuggestions('');
     setAiLoading(true);
     aiApi.getDestinationSuggestions(dropoff)
       .then((res) => setAiSuggestions(res.data.suggestions || ''))
       .catch(() => setAiSuggestions(''))
       .finally(() => setAiLoading(false));
-  }, [dropoffCoords]);
+  };
 
   const handleBookRide = async () => {
     setBooking(true);
@@ -389,9 +394,17 @@ const RiderPortalPage = ({ theme, onThemeToggle }) => {
                 </div>
               ) : (
                 <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', margin: 0 }}>
-                  Enter a destination to get AI-powered suggestions for things to do nearby.
+                  Enter a destination then click below to get AI suggestions.
                 </p>
               )}
+              <button
+                className="btn-portal-cta"
+                disabled={!dropoff.trim() || aiLoading}
+                onClick={handleGetSuggestions}
+                style={{ marginTop: '0.25rem' }}
+              >
+                {aiLoading ? 'Getting suggestions…' : 'Suggest things to do'}
+              </button>
               <div className="strata-chat-widget">
                 <iframe
                   src="https://strata.fyi/embed?workspace=mis372t"
