@@ -1,9 +1,19 @@
-import { useState, useEffect, lazy, Suspense } from 'react';
+import { useState, useEffect, useRef, lazy, Suspense } from 'react';
 import { useUser } from '@clerk/react';
 import PortalNavbar from '../components/PortalNavbar';
 import { ridesApi, paymentsApi } from '../services/api';
 
 const RideMap = lazy(() => import('../components/RideMap'));
+
+const searchAddresses = async (query) => {
+  if (!query || query.length < 3) return [];
+  const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=5&addressdetails=1`;
+  try {
+    const res = await fetch(url, { headers: { 'Accept-Language': 'en', 'User-Agent': 'RideFlow-App' } });
+    const data = await res.json();
+    return data.map((d) => ({ label: d.display_name, lat: parseFloat(d.lat), lon: parseFloat(d.lon) }));
+  } catch { return []; }
+};
 
 const geocode = async (address) => {
   if (!address.trim()) return null;
@@ -94,6 +104,10 @@ const RiderPortalPage = ({ theme, onThemeToggle }) => {
 
   const [pickupCoords,  setPickupCoords]  = useState(null);
   const [dropoffCoords, setDropoffCoords] = useState(null);
+  const [pickupSuggestions,  setPickupSuggestions]  = useState([]);
+  const [dropoffSuggestions, setDropoffSuggestions] = useState([]);
+  const pickupSelected  = useRef(false);
+  const dropoffSelected = useRef(false);
   const [routeInfo,    setRouteInfo]    = useState(null);
   const [booking,      setBooking]      = useState(false);
   const [bookError,    setBookError]    = useState('');
@@ -115,15 +129,23 @@ const RiderPortalPage = ({ theme, onThemeToggle }) => {
   const serviceFee = (pickup || dropoff) ? 1.20 : 0;
   const total      = Math.max(baseFare + distFare + serviceFee, 5.00);
 
-  /* geocode pickup */
+  /* geocode + autocomplete pickup */
   useEffect(() => {
-    const t = setTimeout(async () => { setPickupCoords(await geocode(pickup)); }, 700);
+    if (pickupSelected.current) { pickupSelected.current = false; return; }
+    const t = setTimeout(async () => {
+      setPickupCoords(await geocode(pickup));
+      setPickupSuggestions(await searchAddresses(pickup));
+    }, 400);
     return () => clearTimeout(t);
   }, [pickup]);
 
-  /* geocode dropoff */
+  /* geocode + autocomplete dropoff */
   useEffect(() => {
-    const t = setTimeout(async () => { setDropoffCoords(await geocode(dropoff)); }, 700);
+    if (dropoffSelected.current) { dropoffSelected.current = false; return; }
+    const t = setTimeout(async () => {
+      setDropoffCoords(await geocode(dropoff));
+      setDropoffSuggestions(await searchAddresses(dropoff));
+    }, 400);
     return () => clearTimeout(t);
   }, [dropoff]);
 
@@ -217,21 +239,61 @@ const RiderPortalPage = ({ theme, onThemeToggle }) => {
                 </div>
               ) : (
                 <>
-                  <div className="form-group">
+                  <div className="form-group" style={{ position: 'relative' }}>
                     <span className="field-label">Pickup location</span>
                     <input
                       value={pickup}
                       onChange={(e) => setPickup(e.target.value)}
+                      onBlur={() => setTimeout(() => setPickupSuggestions([]), 150)}
                       placeholder="Enter pickup address…"
+                      autoComplete="off"
                     />
+                    {pickupSuggestions.length > 0 && (
+                      <div className="autocomplete-dropdown">
+                        {pickupSuggestions.map((s, i) => (
+                          <div
+                            key={i}
+                            className="autocomplete-item"
+                            onMouseDown={() => {
+                              pickupSelected.current = true;
+                              setPickup(s.label);
+                              setPickupCoords([s.lat, s.lon]);
+                              setPickupSuggestions([]);
+                            }}
+                          >
+                            {s.label}
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
-                  <div className="form-group">
+                  <div className="form-group" style={{ position: 'relative' }}>
                     <span className="field-label">Dropoff location</span>
                     <input
                       value={dropoff}
                       onChange={(e) => setDropoff(e.target.value)}
+                      onBlur={() => setTimeout(() => setDropoffSuggestions([]), 150)}
                       placeholder="Enter destination…"
+                      autoComplete="off"
                     />
+                    {dropoffSuggestions.length > 0 && (
+                      <div className="autocomplete-dropdown">
+                        {dropoffSuggestions.map((s, i) => (
+                          <div
+                            key={i}
+                            className="autocomplete-item"
+                            onMouseDown={() => {
+                              dropoffSelected.current = true;
+                              setDropoff(s.label);
+                              setDropoffCoords([s.lat, s.lon]);
+                              setDropoffSuggestions([]);
+                            }}
+                          >
+                            {s.label}
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
 
                   <Suspense fallback={<div style={{ height: 260, background: 'var(--surface)', borderRadius: 12, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)' }}>Loading map…</div>}>
@@ -287,20 +349,12 @@ const RiderPortalPage = ({ theme, onThemeToggle }) => {
               </div>
             </div>
 
-            <div className="rider-tips p-card">
-              <div className="section-label">Ride tips</div>
-              <div className="tip-item">
-                <span className="tip-icon">📍</span>
-                <span>Be at your pickup location before requesting.</span>
-              </div>
-              <div className="tip-item">
-                <span className="tip-icon">💳</span>
-                <span>Payment is auto-charged on completion.</span>
-              </div>
-              <div className="tip-item">
-                <span className="tip-icon">⭐</span>
-                <span>Rate your driver after every ride.</span>
-              </div>
+            <div className="p-card" style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+              <div className="section-label">AI Destination Assistant</div>
+              <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', margin: 0 }}>
+                Ask about things to do, restaurants, or attractions at your destination.
+              </p>
+              <strata-chat workspace="mis372t" />
             </div>
           </div>
         </div>
