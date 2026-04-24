@@ -6,10 +6,12 @@ import { ridesApi, paymentsApi, aiApi } from '../services/api';
 const RideMap = lazy(() => import('../components/RideMap'));
 
 const searchAddresses = async (query) => {
-  if (!query || query.length < 3) return [];
-  const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=5&addressdetails=1`;
+  if (!query || query.length < 4) return [];
+  const params = new URLSearchParams({ format: 'json', q: query, limit: '5', addressdetails: '1', countrycodes: 'us' });
   try {
-    const res = await fetch(url, { headers: { 'Accept-Language': 'en', 'User-Agent': 'RideFlow-App' } });
+    const res = await fetch(`https://nominatim.openstreetmap.org/search?${params}`, {
+      headers: { 'Accept-Language': 'en', 'User-Agent': 'RideFlow-App' },
+    });
     const data = await res.json();
     return data.map((d) => ({ label: d.display_name, lat: parseFloat(d.lat), lon: parseFloat(d.lon) }));
   } catch { return []; }
@@ -353,20 +355,6 @@ const RiderPortalPage = ({ theme, onThemeToggle }) => {
                     <p className="book-hint">Enter both pickup and dropoff to continue.</p>
                   )}
 
-                  {(aiLoading || aiSuggestions) && (
-                    <div style={{ marginTop: '1rem', padding: '1rem', background: 'var(--magenta-dim)', border: '1px solid var(--border-bright)', borderRadius: 'var(--radius-sm)' }}>
-                      <div style={{ fontWeight: 600, fontSize: '0.85rem', marginBottom: '0.5rem', color: 'var(--text-primary)' }}>
-                        Things to do at your destination
-                      </div>
-                      {aiLoading ? (
-                        <div style={{ color: 'var(--text-muted)', fontSize: '0.82rem' }}>Getting suggestions…</div>
-                      ) : (
-                        <div style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', whiteSpace: 'pre-line', lineHeight: 1.7 }}>
-                          {aiSuggestions}
-                        </div>
-                      )}
-                    </div>
-                  )}
                 </>
               )}
             </div>
@@ -393,9 +381,17 @@ const RiderPortalPage = ({ theme, onThemeToggle }) => {
 
             <div className="p-card" style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
               <div className="section-label">AI Destination Assistant</div>
-              <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', margin: 0 }}>
-                Ask about things to do, restaurants, or attractions at your destination.
-              </p>
+              {aiLoading ? (
+                <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>Getting suggestions…</div>
+              ) : aiSuggestions ? (
+                <div style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', whiteSpace: 'pre-line', lineHeight: 1.7 }}>
+                  {aiSuggestions}
+                </div>
+              ) : (
+                <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', margin: 0 }}>
+                  Enter a destination to get AI-powered suggestions for things to do nearby.
+                </p>
+              )}
               <div className="strata-chat-widget">
                 <iframe
                   src="https://strata.fyi/embed?workspace=mis372t"
