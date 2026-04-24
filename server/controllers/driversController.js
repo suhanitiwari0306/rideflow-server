@@ -1,0 +1,133 @@
+const { Driver, Ride } = require('../models');
+const { Op } = require('sequelize');
+
+// GET /api/drivers
+const getAllDrivers = async (req, res) => {
+  try {
+    const { search } = req.query;
+    const where = search
+      ? {
+          [Op.or]: [
+            { first_name:    { [Op.iLike]: `%${search}%` } },
+            { last_name:     { [Op.iLike]: `%${search}%` } },
+            { email:         { [Op.iLike]: `%${search}%` } },
+            { license_plate: { [Op.iLike]: `%${search}%` } },
+          ],
+        }
+      : {};
+
+    where.status = { [Op.ne]: 'inactive' };
+    const drivers = await Driver.findAll({ where, order: [['created_at', 'DESC']] });
+    res.json({ success: true, data: drivers });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// GET /api/drivers/:id
+const getDriverById = async (req, res) => {
+  try {
+    const driver = await Driver.findByPk(req.params.id);
+    if (!driver) return res.status(404).json({ success: false, message: 'Driver not found' });
+    res.json({ success: true, data: driver });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// POST /api/drivers
+const createDriver = async (req, res) => {
+  try {
+    const { first_name, last_name, email, phone_number, license_plate, vehicle_model, status, rating } = req.body;
+
+    if (!first_name || !last_name || !email || !phone_number || !license_plate || !vehicle_model) {
+      return res.status(400).json({
+        success: false,
+        message: 'first_name, last_name, email, phone_number, license_plate, and vehicle_model are required',
+      });
+    }
+
+    const driver = await Driver.create({ first_name, last_name, email, phone_number, license_plate, vehicle_model, status, rating });
+    res.status(201).json({ success: true, data: driver });
+  } catch (error) {
+    if (error.name === 'SequelizeUniqueConstraintError') {
+      return res.status(409).json({ success: false, message: 'Email or license plate already in use' });
+    }
+    if (error.name === 'SequelizeValidationError') {
+      return res.status(400).json({ success: false, message: error.errors[0].message });
+    }
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// PUT /api/drivers/:id
+const updateDriver = async (req, res) => {
+  try {
+    const driver = await Driver.findByPk(req.params.id);
+    if (!driver) return res.status(404).json({ success: false, message: 'Driver not found' });
+
+    const { first_name, last_name, email, phone_number, license_plate, vehicle_model, status, rating } = req.body;
+
+    await driver.update({
+      first_name:     first_name     ?? driver.first_name,
+      last_name:      last_name      ?? driver.last_name,
+      email:          email          ?? driver.email,
+      phone_number:   phone_number   ?? driver.phone_number,
+      license_plate:  license_plate  ?? driver.license_plate,
+      vehicle_model:  vehicle_model  ?? driver.vehicle_model,
+      status:         status         ?? driver.status,
+      rating:         rating         ?? driver.rating,
+    });
+
+    res.json({ success: true, data: driver });
+  } catch (error) {
+    if (error.name === 'SequelizeUniqueConstraintError') {
+      return res.status(409).json({ success: false, message: 'Email or license plate already in use' });
+    }
+    if (error.name === 'SequelizeValidationError') {
+      return res.status(400).json({ success: false, message: error.errors[0].message });
+    }
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// DELETE /api/drivers/:id — soft delete (sets status = 'inactive')
+const deleteDriver = async (req, res) => {
+  try {
+    const driver = await Driver.findByPk(req.params.id);
+    if (!driver) return res.status(404).json({ success: false, message: 'Driver not found' });
+    await driver.update({ status: 'inactive' });
+    res.json({ success: true, message: `Driver ${req.params.id} deactivated` });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// GET /api/drivers/stats
+const getDriverStats = async (req, res) => {
+  try {
+    const drivers = await Driver.findAll();
+    const stats = await Promise.all(drivers.map(async (d) => {
+      const rides = await Ride.findAll({ where: { driver_id: d.driver_id } });
+      const completed = rides.filter((r) => r.status === 'completed');
+      const revenue = completed.reduce((sum, r) => sum + (parseFloat(r.fare) || 0), 0);
+      return {
+        driver_id:      d.driver_id,
+        name:           `${d.first_name} ${d.last_name}`,
+        vehicle:        d.vehicle_model,
+        phone_number:   d.phone_number,
+        status:         d.status,
+        rating:         d.rating,
+        total_rides:    rides.length,
+        completed_rides: completed.length,
+        total_revenue:  parseFloat(revenue.toFixed(2)),
+      };
+    }));
+    stats.sort((a, b) => b.total_revenue - a.total_revenue);
+    res.json({ success: true, data: stats });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+module.exports = { getAllDrivers, getDriverById, createDriver, updateDriver, deleteDriver, getDriverStats };

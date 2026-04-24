@@ -1,0 +1,612 @@
+import { useState, useEffect, lazy, Suspense } from 'react';
+import { useUser } from '@clerk/react';
+import PortalNavbar from '../components/PortalNavbar';
+import { ridesApi, paymentsApi } from '../services/api';
+
+const RideMap = lazy(() => import('../components/RideMap'));
+
+const geocode = async (address) => {
+  if (!address.trim()) return null;
+  const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(address)}&limit=1`;
+  try {
+    const res = await fetch(url, { headers: { 'Accept-Language': 'en', 'User-Agent': 'RideFlow-App' } });
+    const data = await res.json();
+    if (!data.length) return null;
+    return [parseFloat(data[0].lat), parseFloat(data[0].lon)];
+  } catch { return null; }
+};
+
+const getRoute = async (pickup, dropoff) => {
+  // OSRM gives real driving distance + duration (not straight-line)
+  const url = `https://router.project-osrm.org/route/v1/driving/${pickup[1]},${pickup[0]};${dropoff[1]},${dropoff[0]}?overview=false`;
+  try {
+    const res = await fetch(url);
+    const data = await res.json();
+    if (data.routes?.[0]) {
+      return {
+        miles:   data.routes[0].distance / 1609.34,
+        minutes: Math.round(data.routes[0].duration / 60),
+      };
+    }
+  } catch {}
+  return null;
+};
+
+const TABS = [
+  { id: 'book',         label: 'Book a Ride'   },
+  { id: 'active',       label: 'Active Ride'   },
+  { id: 'history',      label: 'Ride History'  },
+  { id: 'transactions', label: 'Transactions'  },
+  { id: 'profile',      label: 'Profile'       },
+];
+
+const STATUS_STEPS = ['Requested', 'Accepted', 'En Route', 'In Progress', 'Done'];
+
+const MOCK_PICKUP_COORDS  = [30.2849, -97.7341];
+const MOCK_DROPOFF_COORDS = [30.2672, -97.7431];
+
+const capWords = (s) =>
+  s.split('_').map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+
+const statusClass = (s) => `status-badge status-${s}`;
+
+/* ── Active Ride Card ──────────────────────────────────────────────────────── */
+const ActiveRideCard = () => (
+  <div className="active-ride-card">
+    <div className="active-ride-driver-row">
+      <div className="driver-avatar">MT</div>
+      <div className="active-ride-driver-info">
+        <div className="active-ride-name">Marcus T.</div>
+        <div className="active-ride-vehicle">Toyota Camry · TXA-4821</div>
+      </div>
+      <span className="time-badge">~2 min away</span>
+    </div>
+    <div className="active-ride-status-text">Driver en route to your pickup</div>
+
+    <Suspense fallback={<div style={{ height: 280, background: 'var(--bg-secondary)', borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)' }}>Loading map…</div>}>
+      <RideMap pickupCoords={MOCK_PICKUP_COORDS} dropoffCoords={MOCK_DROPOFF_COORDS} />
+    </Suspense>
+
+    <div className="ride-status-bar">
+      <div className="ride-status-label">RIDE STATUS</div>
+      <div className="ride-status-track">
+        {STATUS_STEPS.map((s, i) => (
+          <span key={s}>
+            <div className={`rs-step${i < 3 ? ' rs-done' : ''}`}>
+              <div className={`rs-dot${i >= 3 ? ' rs-dot-empty' : ''}`} />
+              <span>{s}</span>
+            </div>
+            {i < STATUS_STEPS.length - 1 && (
+              <div className={`rs-line${i < 2 ? ' rs-line-done' : ''}`} />
+            )}
+          </span>
+        ))}
+      </div>
+    </div>
+  </div>
+);
+
+/* ── Rider Portal Page ─────────────────────────────────────────────────────── */
+const RiderPortalPage = ({ theme, onThemeToggle }) => {
+  const [activeTab, setActiveTab] = useState('book');
+  const [pickup,    setPickup]    = useState('');
+  const [dropoff,   setDropoff]   = useState('');
+
+  const [pickupCoords,  setPickupCoords]  = useState(null);
+  const [dropoffCoords, setDropoffCoords] = useState(null);
+  const [routeInfo,    setRouteInfo]    = useState(null);
+  const [booking,      setBooking]      = useState(false);
+  const [bookError,    setBookError]    = useState('');
+  const [bookSuccess,  setBookSuccess]  = useState(false);
+  const [showCancel,   setShowCancel]   = useState(false);
+  const [cancelReason, setCancelReason] = useState('');
+  const [cancelling,   setCancelling]   = useState(false);
+
+  const [rides,    setRides]    = useState([]);
+  const [payments, setPayments] = useState([]);
+  const [loadingRides,    setLoadingRides]    = useState(false);
+  const [loadingPayments, setLoadingPayments] = useState(false);
+  const [ridesError,    setRidesError]    = useState('');
+  const [paymentsError, setPaymentsError] = useState('');
+
+  const baseFare   = 2.50;
+  const PER_MILE   = 1.75;
+  const distFare   = routeInfo ? routeInfo.miles * PER_MILE : 0;
+  const serviceFee = (pickup || dropoff) ? 1.20 : 0;
+  const total      = Math.max(baseFare + distFare + serviceFee, 5.00);
+
+  /* geocode pickup */
+  useEffect(() => {
+    const t = setTimeout(async () => { setPickupCoords(await geocode(pickup)); }, 700);
+    return () => clearTimeout(t);
+  }, [pickup]);
+
+  /* geocode dropoff */
+  useEffect(() => {
+    const t = setTimeout(async () => { setDropoffCoords(await geocode(dropoff)); }, 700);
+    return () => clearTimeout(t);
+  }, [dropoff]);
+
+  /* get real driving route when both coords are ready */
+  useEffect(() => {
+    if (!pickupCoords || !dropoffCoords) { setRouteInfo(null); return; }
+    getRoute(pickupCoords, dropoffCoords).then(setRouteInfo);
+  }, [pickupCoords, dropoffCoords]);
+
+  const handleBookRide = async () => {
+    setBooking(true);
+    setBookError('');
+    try {
+      await ridesApi.create({ pickup_location: pickup, dropoff_location: dropoff, fare: total });
+      setBookSuccess(true);
+      setPickup('');
+      setDropoff('');
+      setPickupCoords(null);
+      setDropoffCoords(null);
+    } catch (err) {
+      setBookError(err.response?.data?.message || 'Failed to book ride. Please try again.');
+    } finally {
+      setBooking(false);
+    }
+  };
+
+  /* fetch on tab change — always refresh so data stays current */
+  useEffect(() => {
+    if (activeTab === 'history') {
+      setLoadingRides(true);
+      setRidesError('');
+      ridesApi.getAll()
+        .then((res) => {
+          const raw = res.data?.data ?? res.data ?? [];
+          setRides(Array.isArray(raw) ? raw : []);
+        })
+        .catch((err) => setRidesError(err.response?.data?.message || 'Failed to load rides.'))
+        .finally(() => setLoadingRides(false));
+    }
+    if (activeTab === 'transactions') {
+      setLoadingPayments(true);
+      setPaymentsError('');
+      paymentsApi.getAll()
+        .then((res) => {
+          const raw = res.data?.data ?? res.data ?? [];
+          setPayments(Array.isArray(raw) ? raw : []);
+        })
+        .catch((err) => setPaymentsError(err.response?.data?.message || 'Failed to load transactions.'))
+        .finally(() => setLoadingPayments(false));
+    }
+  }, [activeTab]);
+
+  return (
+    <div className="portal-shell">
+      {(() => {
+        const { user } = useUser();
+        const userInitials = user?.firstName && user?.lastName
+          ? `${user.firstName[0]}${user.lastName[0]}`.toUpperCase()
+          : user?.firstName
+            ? user.firstName.slice(0, 2).toUpperCase()
+            : '';
+        const userName = user?.firstName && user?.lastName
+          ? `${user.firstName} ${user.lastName[0]}.`
+          : user?.firstName || '';
+        return (
+          <PortalNavbar
+            role="Rider"
+            tabs={TABS}
+            activeTab={activeTab}
+            onTabChange={setActiveTab}
+            theme={theme}
+            onThemeToggle={onThemeToggle}
+            userInitials={userInitials}
+            userName={userName}
+          />
+        );
+      })()}
+
+      {/* ── Book a Ride ────────────────────────────────────────────── */}
+      {activeTab === 'book' && (
+        <div className="portal-page">
+          <div className="portal-panel">
+            <div className="section-label">Request a ride</div>
+            <div className="p-card ride-form-fields">
+              {bookSuccess ? (
+                <div style={{ textAlign: 'center', padding: '1.5rem 0' }}>
+                  <div style={{ fontSize: '2rem', marginBottom: '0.5rem' }}>🎉</div>
+                  <div style={{ fontWeight: 600, marginBottom: '0.25rem' }}>Ride requested!</div>
+                  <div style={{ color: 'var(--text-muted)', marginBottom: '1rem' }}>Your driver will be assigned shortly.</div>
+                  <button className="btn-portal-cta" onClick={() => setBookSuccess(false)}>Book another</button>
+                </div>
+              ) : (
+                <>
+                  <div className="form-group">
+                    <span className="field-label">Pickup location</span>
+                    <input
+                      value={pickup}
+                      onChange={(e) => setPickup(e.target.value)}
+                      placeholder="Enter pickup address…"
+                    />
+                  </div>
+                  <div className="form-group">
+                    <span className="field-label">Dropoff location</span>
+                    <input
+                      value={dropoff}
+                      onChange={(e) => setDropoff(e.target.value)}
+                      placeholder="Enter destination…"
+                    />
+                  </div>
+
+                  <Suspense fallback={<div style={{ height: 260, background: 'var(--surface)', borderRadius: 12, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)' }}>Loading map…</div>}>
+                    <RideMap pickupCoords={pickupCoords} dropoffCoords={dropoffCoords} />
+                  </Suspense>
+
+                  <div className="ride-form-fare" style={{ marginTop: '1rem' }}>
+                    <div className="fare-row"><span>Base fare</span><span>${baseFare.toFixed(2)}</span></div>
+                    <div className="fare-row">
+                      <span>Distance {routeInfo ? `(${routeInfo.miles.toFixed(1)} mi)` : pickup && dropoff ? '(calculating…)' : ''}</span>
+                      <span>{routeInfo ? `$${distFare.toFixed(2)}` : '—'}</span>
+                    </div>
+                    <div className="fare-row"><span>Service fee</span><span>${serviceFee.toFixed(2)}</span></div>
+                    <div className="fare-row fare-total">
+                      <span>Total estimate {routeInfo ? `· ~${routeInfo.minutes} min drive` : ''}</span>
+                      <span>${total.toFixed(2)}</span>
+                    </div>
+                  </div>
+
+                  {bookError && <p style={{ color: 'var(--danger)', marginTop: '0.5rem', fontSize: '0.85rem' }}>{bookError}</p>}
+
+                  <button
+                    className="btn-portal-cta"
+                    disabled={!pickup.trim() || !dropoff.trim() || booking}
+                    onClick={handleBookRide}
+                  >
+                    {booking ? 'Requesting…' : 'Request Ride'}
+                  </button>
+                  {(!pickup.trim() || !dropoff.trim()) && (
+                    <p className="book-hint">Enter both pickup and dropoff to continue.</p>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+
+          <div className="portal-panel">
+            <div className="portal-stats-row">
+              <div className="portal-stat-card">
+                <div className="portal-stat-label">Total Rides</div>
+                <div className="portal-stat-value">42</div>
+                <div className="portal-stat-sub">lifetime rides</div>
+              </div>
+              <div className="portal-stat-card">
+                <div className="portal-stat-label">Total Spent</div>
+                <div className="portal-stat-value stat-magenta">$384</div>
+                <div className="portal-stat-sub">avg $9.14 / ride</div>
+              </div>
+              <div className="portal-stat-card portal-stat-full">
+                <div className="portal-stat-label">Spent This Month</div>
+                <div className="portal-stat-value stat-magenta">$47.22</div>
+                <div className="portal-stat-sub">3 rides in April · +12% vs last month</div>
+              </div>
+            </div>
+
+            <div className="rider-tips p-card">
+              <div className="section-label">Ride tips</div>
+              <div className="tip-item">
+                <span className="tip-icon">📍</span>
+                <span>Be at your pickup location before requesting.</span>
+              </div>
+              <div className="tip-item">
+                <span className="tip-icon">💳</span>
+                <span>Payment is auto-charged on completion.</span>
+              </div>
+              <div className="tip-item">
+                <span className="tip-icon">⭐</span>
+                <span>Rate your driver after every ride.</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Active Ride ─────────────────────────────────────────────── */}
+      {activeTab === 'active' && (
+        <div className="active-ride-page">
+          <div className="active-ride-left">
+            <div className="page-header">
+              <h1>Active Ride</h1>
+              <p>Your driver is on the way</p>
+            </div>
+            <ActiveRideCard />
+          </div>
+
+          <div className="active-ride-right">
+            <div className="p-card active-ride-actions">
+              <div className="section-label">Need help?</div>
+              <div className="active-help-row">
+                <a href="tel:5125550201" className="btn-help" style={{ textDecoration: 'none', textAlign: 'center' }}>Contact Driver</a>
+                <button className="btn-help btn-help-danger" onClick={() => setShowCancel(true)}>Cancel Ride</button>
+              </div>
+              <p className="active-help-note">
+                Cancellations after driver acceptance may incur a $2.00 fee.
+              </p>
+            </div>
+
+            <div className="p-card" style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+              <div className="section-label">Ride details</div>
+              <div className="account-field" style={{ padding: '0.6rem 0' }}>
+                <span className="account-field-label">Driver</span>
+                <span className="account-field-value">Marcus T.</span>
+              </div>
+              <div className="account-field" style={{ padding: '0.6rem 0' }}>
+                <span className="account-field-label">Vehicle</span>
+                <span className="account-field-value">Toyota Camry · TXA-4821</span>
+              </div>
+              <div className="account-field" style={{ padding: '0.6rem 0' }}>
+                <span className="account-field-label">ETA</span>
+                <span className="account-field-value">~2 min away</span>
+              </div>
+              <div className="account-field" style={{ padding: '0.6rem 0', border: 'none' }}>
+                <span className="account-field-label">Est. Fare</span>
+                <span className="account-field-value" style={{ color: 'var(--magenta)' }}>$12.50</span>
+              </div>
+            </div>
+
+            <div className="rider-tips p-card">
+              <div className="section-label">Safety tips</div>
+              <div className="tip-item">
+                <span className="tip-icon">🔒</span>
+                <span>Verify the license plate before getting in.</span>
+              </div>
+              <div className="tip-item">
+                <span className="tip-icon">📱</span>
+                <span>Share your trip details with a friend.</span>
+              </div>
+              <div className="tip-item">
+                <span className="tip-icon">⭐</span>
+                <span>Rate your driver after every ride.</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Cancel Ride Modal ────────────────────────────────────────── */}
+      {showCancel && (
+        <div className="modal-overlay" onClick={() => setShowCancel(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>Cancel Ride?</h2>
+              <button className="modal-close" onClick={() => setShowCancel(false)}>×</button>
+            </div>
+
+            <div style={{ padding: '0 0 1rem' }}>
+              <div className="p-card" style={{ background: 'var(--warning-bg, #fff8e1)', border: '1px solid var(--warning, #f59e0b)', marginBottom: '1rem' }}>
+                <div style={{ fontWeight: 600, marginBottom: '0.25rem' }}>⚠️ Cancellation fee: $2.00</div>
+                <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                  Your driver Marcus T. is ~2 min away. A $2.00 fee applies since the driver has already accepted.
+                </div>
+              </div>
+
+              <div className="form-group">
+                <span className="field-label">Reason for cancellation</span>
+                <select
+                  value={cancelReason}
+                  onChange={(e) => setCancelReason(e.target.value)}
+                  style={{ width: '100%', padding: '0.5rem', borderRadius: '8px', border: '1px solid var(--border)' }}
+                >
+                  <option value="">Select a reason…</option>
+                  <option value="wait_too_long">Driver is taking too long</option>
+                  <option value="wrong_address">Wrong pickup address</option>
+                  <option value="plans_changed">Plans changed</option>
+                  <option value="found_alternative">Found another ride</option>
+                  <option value="other">Other</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="modal-footer">
+              <button className="btn btn-ghost" onClick={() => setShowCancel(false)} disabled={cancelling}>
+                Keep Ride
+              </button>
+              <button
+                className="btn btn-danger"
+                disabled={!cancelReason || cancelling}
+                onClick={async () => {
+                  setCancelling(true);
+                  await new Promise((r) => setTimeout(r, 800));
+                  setCancelling(false);
+                  setShowCancel(false);
+                  setCancelReason('');
+                }}
+              >
+                {cancelling ? 'Cancelling…' : 'Confirm Cancel ($2.00)'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Ride History ─────────────────────────────────────────────── */}
+      {activeTab === 'history' && (
+        <div className="history-page">
+          <div className="page-header">
+            <h1>Ride History</h1>
+            <p>All rides recorded on the RideFlow platform</p>
+          </div>
+
+          <div className="table-wrap">
+            {loadingRides ? (
+              <div className="table-empty">Loading rides…</div>
+            ) : ridesError ? (
+              <div className="table-empty" style={{ color: 'var(--danger)' }}>{ridesError}</div>
+            ) : rides.length === 0 ? (
+              <div className="table-empty">No rides found.</div>
+            ) : (
+              <table>
+                <thead>
+                  <tr>
+                    <th>Ride ID</th>
+                    <th>Date &amp; Time</th>
+                    <th>Pickup</th>
+                    <th>Dropoff</th>
+                    <th>Status</th>
+                    <th>Fare</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {[...rides]
+                    .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+                    .map((r) => (
+                    <tr key={r.ride_id}>
+                      <td><span className="ride-id-link">R{r.ride_id}</span></td>
+                      <td style={{ whiteSpace: 'nowrap', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                        {r.created_at ? new Date(r.created_at).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }) : '—'}
+                      </td>
+                      <td>{r.pickup_location}</td>
+                      <td>{r.dropoff_location}</td>
+                      <td>
+                        <span className={statusClass(r.status)}>
+                          {capWords(r.status)}
+                        </span>
+                      </td>
+                      <td>{r.fare ? `$${parseFloat(r.fare).toFixed(2)}` : '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ── Transactions ─────────────────────────────────────────────── */}
+      {activeTab === 'transactions' && (
+        <div className="history-page">
+          <div className="page-header">
+            <h1>Transactions</h1>
+            <p>Full payment history on RideFlow</p>
+          </div>
+
+          <div className="table-wrap">
+            {loadingPayments ? (
+              <div className="table-empty">Loading transactions…</div>
+            ) : paymentsError ? (
+              <div className="table-empty" style={{ color: 'var(--danger)' }}>{paymentsError}</div>
+            ) : payments.length === 0 ? (
+              <div className="table-empty">No transactions found.</div>
+            ) : (
+              <table>
+                <thead>
+                  <tr>
+                    <th>Payment ID</th>
+                    <th>Date &amp; Time</th>
+                    <th>Ride</th>
+                    <th>Amount</th>
+                    <th>Method</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {[...payments]
+                    .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+                    .map((p) => (
+                    <tr key={p.payment_id}>
+                      <td><span className="ride-id-link">PAY-{p.payment_id}</span></td>
+                      <td style={{ whiteSpace: 'nowrap', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                        {p.created_at ? new Date(p.created_at).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }) : '—'}
+                      </td>
+                      <td><span className="ride-id-link">R{p.ride_id}</span></td>
+                      <td><strong>${parseFloat(p.amount).toFixed(2)}</strong></td>
+                      <td>{capWords(p.payment_method)}</td>
+                      <td>
+                        <span className={statusClass(p.status)}>
+                          {capWords(p.status)}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ── Profile ──────────────────────────────────────────────────── */}
+      {activeTab === 'profile' && (
+        <div className="account-page">
+          <div className="page-header">
+            <h1>Profile</h1>
+            <p>Your RideFlow rider account</p>
+          </div>
+
+          <div className="profile-layout">
+            <div className="p-card profile-card">
+              <div className="profile-avatar-row">
+                <div className="profile-avatar">ST</div>
+                <div>
+                  <div className="profile-name">Suhani Tiwari</div>
+                  <div className="profile-since">Member since Jan 2026</div>
+                </div>
+              </div>
+
+              <div className="section-label">Account info</div>
+              <div className="account-field">
+                <span className="account-field-label">Full Name</span>
+                <span className="account-field-value">Suhani Tiwari</span>
+              </div>
+              <div className="account-field">
+                <span className="account-field-label">Email</span>
+                <span className="account-field-value">rider@rideflow.app</span>
+              </div>
+              <div className="account-field">
+                <span className="account-field-label">Phone</span>
+                <span className="account-field-value">(512) 471-5921</span>
+              </div>
+              <div className="account-field">
+                <span className="account-field-label">Default Payment</span>
+                <span className="account-field-value">Credit Card</span>
+              </div>
+
+              <div className="section-label" style={{ marginTop: '1.5rem' }}>Ride Preferences</div>
+              <div className="account-field">
+                <span className="account-field-label">Driver Gender</span>
+                <span className="account-field-value">Female preferred</span>
+              </div>
+              <div className="account-field">
+                <span className="account-field-label">Vehicle Type</span>
+                <span className="account-field-value">Sedan</span>
+              </div>
+              <div className="account-field">
+                <span className="account-field-label">Music</span>
+                <span className="account-field-value">Quiet / No music</span>
+              </div>
+              <div className="account-field">
+                <span className="account-field-label">Conversation</span>
+                <span className="account-field-value">Minimal chat</span>
+              </div>
+            </div>
+
+            <div className="profile-stats-col">
+              <div className="p-card profile-stat-card">
+                <div className="portal-stat-label">Total Rides</div>
+                <div className="portal-stat-value">42</div>
+                <div className="portal-stat-sub">lifetime rides</div>
+              </div>
+              <div className="p-card profile-stat-card">
+                <div className="portal-stat-label">Total Spent</div>
+                <div className="portal-stat-value stat-magenta">$384.00</div>
+                <div className="portal-stat-sub">all time</div>
+              </div>
+              <div className="p-card profile-stat-card">
+                <div className="portal-stat-label">Avg Fare</div>
+                <div className="portal-stat-value">$9.14</div>
+                <div className="portal-stat-sub">per ride</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default RiderPortalPage;
