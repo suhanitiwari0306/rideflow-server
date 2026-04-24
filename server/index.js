@@ -10,6 +10,7 @@ const ridersRouter   = require('./routes/riders');
 const driversRouter  = require('./routes/drivers');
 const ridesRouter    = require('./routes/rides');
 const paymentsRouter = require('./routes/payments');
+const aiRouter       = require('./routes/ai');
 
 const app  = express();
 const PORT = process.env.PORT || 3001;
@@ -39,6 +40,7 @@ app.use('/api/riders',   ridersRouter);
 app.use('/api/drivers',  driversRouter);
 app.use('/api/rides',    ridesRouter);
 app.use('/api/payments', paymentsRouter);
+app.use('/api/ai',       aiRouter);
 
 // 404 handler
 app.use((req, res) => {

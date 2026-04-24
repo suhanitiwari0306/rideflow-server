@@ -47,4 +47,9 @@ export const paymentsApi = {
   delete:   (id)       => api.delete(`/payments/${id}`),
 };
 
+export const aiApi = {
+  getDestinationSuggestions: (destination) =>
+    api.post('/ai/destination-suggestions', { destination }),
+};
+
 export default api;

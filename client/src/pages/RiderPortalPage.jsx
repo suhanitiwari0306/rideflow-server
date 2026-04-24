@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, lazy, Suspense } from 'react';
 import { useUser } from '@clerk/react';
 import PortalNavbar from '../components/PortalNavbar';
-import { ridesApi, paymentsApi } from '../services/api';
+import { ridesApi, paymentsApi, aiApi } from '../services/api';
 
 const RideMap = lazy(() => import('../components/RideMap'));
 
@@ -108,6 +108,10 @@ const RiderPortalPage = ({ theme, onThemeToggle }) => {
   const [dropoffSuggestions, setDropoffSuggestions] = useState([]);
   const pickupSelected  = useRef(false);
   const dropoffSelected = useRef(false);
+  const pickupInputRef  = useRef(null);
+  const dropoffInputRef = useRef(null);
+  const [pickupRect,  setPickupRect]  = useState(null);
+  const [dropoffRect, setDropoffRect] = useState(null);
   const [routeInfo,    setRouteInfo]    = useState(null);
   const [booking,      setBooking]      = useState(false);
   const [bookError,    setBookError]    = useState('');
@@ -122,6 +126,9 @@ const RiderPortalPage = ({ theme, onThemeToggle }) => {
   const [loadingPayments, setLoadingPayments] = useState(false);
   const [ridesError,    setRidesError]    = useState('');
   const [paymentsError, setPaymentsError] = useState('');
+
+  const [aiSuggestions, setAiSuggestions] = useState('');
+  const [aiLoading,     setAiLoading]     = useState(false);
 
   const baseFare   = 2.50;
   const PER_MILE   = 1.75;
@@ -154,6 +161,16 @@ const RiderPortalPage = ({ theme, onThemeToggle }) => {
     if (!pickupCoords || !dropoffCoords) { setRouteInfo(null); return; }
     getRoute(pickupCoords, dropoffCoords).then(setRouteInfo);
   }, [pickupCoords, dropoffCoords]);
+
+  /* AI destination suggestions — fires when dropoff resolves to coords */
+  useEffect(() => {
+    if (!dropoff.trim() || !dropoffCoords) { setAiSuggestions(''); return; }
+    setAiLoading(true);
+    aiApi.getDestinationSuggestions(dropoff)
+      .then((res) => setAiSuggestions(res.data.suggestions || ''))
+      .catch(() => setAiSuggestions(''))
+      .finally(() => setAiLoading(false));
+  }, [dropoffCoords]);
 
   const handleBookRide = async () => {
     setBooking(true);
@@ -239,17 +256,22 @@ const RiderPortalPage = ({ theme, onThemeToggle }) => {
                 </div>
               ) : (
                 <>
-                  <div className="form-group" style={{ position: 'relative', zIndex: 10 }}>
+                  <div className="form-group">
                     <span className="field-label">Pickup location</span>
                     <input
+                      ref={pickupInputRef}
                       value={pickup}
-                      onChange={(e) => setPickup(e.target.value)}
+                      onChange={(e) => {
+                        setPickup(e.target.value);
+                        if (pickupInputRef.current) setPickupRect(pickupInputRef.current.getBoundingClientRect());
+                      }}
+                      onFocus={() => { if (pickupInputRef.current) setPickupRect(pickupInputRef.current.getBoundingClientRect()); }}
                       onBlur={() => setTimeout(() => setPickupSuggestions([]), 150)}
                       placeholder="Enter pickup address…"
                       autoComplete="off"
                     />
-                    {pickupSuggestions.length > 0 && (
-                      <div className="autocomplete-dropdown">
+                    {pickupSuggestions.length > 0 && pickupRect && (
+                      <div className="autocomplete-dropdown" style={{ position: 'fixed', top: pickupRect.bottom + 2, left: pickupRect.left, width: pickupRect.width }}>
                         {pickupSuggestions.map((s, i) => (
                           <div
                             key={i}
@@ -267,17 +289,22 @@ const RiderPortalPage = ({ theme, onThemeToggle }) => {
                       </div>
                     )}
                   </div>
-                  <div className="form-group" style={{ position: 'relative', zIndex: 10 }}>
+                  <div className="form-group">
                     <span className="field-label">Dropoff location</span>
                     <input
+                      ref={dropoffInputRef}
                       value={dropoff}
-                      onChange={(e) => setDropoff(e.target.value)}
+                      onChange={(e) => {
+                        setDropoff(e.target.value);
+                        if (dropoffInputRef.current) setDropoffRect(dropoffInputRef.current.getBoundingClientRect());
+                      }}
+                      onFocus={() => { if (dropoffInputRef.current) setDropoffRect(dropoffInputRef.current.getBoundingClientRect()); }}
                       onBlur={() => setTimeout(() => setDropoffSuggestions([]), 150)}
                       placeholder="Enter destination…"
                       autoComplete="off"
                     />
-                    {dropoffSuggestions.length > 0 && (
-                      <div className="autocomplete-dropdown">
+                    {dropoffSuggestions.length > 0 && dropoffRect && (
+                      <div className="autocomplete-dropdown" style={{ position: 'fixed', top: dropoffRect.bottom + 2, left: dropoffRect.left, width: dropoffRect.width }}>
                         {dropoffSuggestions.map((s, i) => (
                           <div
                             key={i}
@@ -324,6 +351,21 @@ const RiderPortalPage = ({ theme, onThemeToggle }) => {
                   </button>
                   {(!pickup.trim() || !dropoff.trim()) && (
                     <p className="book-hint">Enter both pickup and dropoff to continue.</p>
+                  )}
+
+                  {(aiLoading || aiSuggestions) && (
+                    <div style={{ marginTop: '1rem', padding: '1rem', background: 'var(--magenta-dim)', border: '1px solid var(--border-bright)', borderRadius: 'var(--radius-sm)' }}>
+                      <div style={{ fontWeight: 600, fontSize: '0.85rem', marginBottom: '0.5rem', color: 'var(--text-primary)' }}>
+                        Things to do at your destination
+                      </div>
+                      {aiLoading ? (
+                        <div style={{ color: 'var(--text-muted)', fontSize: '0.82rem' }}>Getting suggestions…</div>
+                      ) : (
+                        <div style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', whiteSpace: 'pre-line', lineHeight: 1.7 }}>
+                          {aiSuggestions}
+                        </div>
+                      )}
+                    </div>
                   )}
                 </>
               )}
